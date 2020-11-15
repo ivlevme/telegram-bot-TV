@@ -72,7 +72,7 @@ function getQuestion(order, id) {
 }
 
 function sendSelectedItem(params) {
-  connection.query(`SELECT * FROM Answ`, function (err, data) {
+  connection.query(`SELECT * FROM ${CURRENT_ANSW_TABLE}`, function (err, data) {
     if (err) {
       throw new Error(err);
     }
@@ -94,7 +94,7 @@ function sendSelectedItem(params) {
 
       const result = data.length
         ? JSON.stringify(data, null, 2)
-        : `По вашем параметрам нет подходящих телевизоров :( )`;
+        : `По вашем параметрам нет подходящих телевизоров. Попробуйте ещё раз командой /start`;
       bot.sendMessage(ID_CHAT, result);
     });
   });
@@ -174,7 +174,7 @@ function saveAnswer(value, param) {
       console.log(ParamValue);
 
       connection.query(
-        `INSERT INTO Answ (Parameter, Value) VALUES (?,?)`,
+        `INSERT INTO ${CURRENT_ANSW_TABLE} (Parameter, Value) VALUES (?,?)`,
         [param, ParamValue],
         function (err, question) {
           if (err) {
@@ -188,7 +188,7 @@ function saveAnswer(value, param) {
       );
     } else if (value !== `help`) {
       connection.query(
-        `INSERT INTO Answ (Parameter, Value) VALUES (?,?)`,
+        `INSERT INTO ${CURRENT_ANSW_TABLE} (Parameter, Value) VALUES (?,?)`,
         [param, value],
         function (err) {
           if (err) {
@@ -207,15 +207,17 @@ function saveAnswer(value, param) {
 }
 
 function createAnswerTable(id) {
-  connection.query(
-    `CREATE TABLE 'Answ_${id}' (
-      'ID' int(100) NOT NULL,
-      'Parameter' varchar(100) NOT NULL,
-      'Value' varchar(100) DEFAULT NULL
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;`
+  const tableName = `Answ_${Date.now()}`;
+  try {
+    connection.query(
+      `CREATE TABLE std_1313.${tableName} (ID INT NOT NULL AUTO_INCREMENT , Parameter VARCHAR(100) NOT NULL , Value VARCHAR(100) NOT NULL , PRIMARY KEY (ID)) ENGINE = InnoDB;
+      `
   );
+  } catch (error) {
+    console.log(error)
+  }
 
-  return `Answ_${id}`;
+  return tableName;
 }
 
 bot.onText(/\/start/, (msg) => {

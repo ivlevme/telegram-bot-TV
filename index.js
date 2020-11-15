@@ -6,6 +6,7 @@ const bot = new TelegramBot(TOKEN, {polling: true});
 
 let ID_CHAT = null; //FIXME:
 let START_ORDER = 1;
+let CURRENT_ANSW_TABLE = '';
 
 const connection = mysql.createConnection({
   host: 'std-mysql',
@@ -64,7 +65,38 @@ function getQuestion(order, id) {
     }
 
     bot.sendMessage(ID_CHAT, 'Отлично! Мы закончили! Вот ваш результат: ');
+    sendSelectedItem();
+
     return false;
+  });
+}
+
+function sendSelectedItem(params) {
+  connection.query(`SELECT * FROM Answ`, function (err, data) {
+    if (err) {
+      throw new Error(err);
+    }
+
+    console.log(data);
+
+    const term = data
+      .map((param) => {
+        return `${param.Parameter}='${param.Value}'`;
+      })
+      .join(' AND ');
+
+    console.log(term);
+
+    connection.query(`SELECT * FROM Items WHERE ${term}`, function (err, data) {
+      if (err) {
+        throw new Error(err);
+      }
+
+      const result = data.length
+        ? JSON.stringify(data, null, 2)
+        : `По вашем параметрам нет подходящих телевизоров :( )`;
+      bot.sendMessage(ID_CHAT, result);
+    });
   });
 }
 
@@ -87,9 +119,25 @@ function generateInterfaceForQuestion(question) {
 
   if (answers.length === 0) {
     bot.on('message', (msg) => {
-      saveAnswer(msg.text, question.Parameter);
+      switch (question.Parameter) {
+        case 'diagonal':
+          if (msg.text >= 22 && msg.text <= 75) {
+            saveAnswer(msg.text, question.Parameter);
+            bot.off('message');
+          } else {
+            bot.sendMessage(ID_CHAT, 'Ваш ответ некорректен, введите данные в диапазоне 22-75');
+          }
+          break;
 
-      bot.off('message');
+        case 'developYear':
+          if (msg.text >= 2017 && msg.text <= 2020) {
+            saveAnswer(msg.text, question.Parameter);
+            bot.off('message');
+          } else {
+            bot.sendMessage(ID_CHAT, 'Ваш ответ некорректен, введите данные в диапазоне 2017-2020');
+          }
+          break;
+      }
     });
   }
 
@@ -111,23 +159,63 @@ function saveAnswer(value, param) {
   console.log(`param: `, param);
   console.log(`save: `, value);
 
-  if (value !== 'help') {
-    connection.query(`INSERT INTO Answ (Parameter, Value) VALUES (?,?)`, [param, value], function (
-      err,
-      question
-    ) {
-      if (err) {
-        throw new Error(err);
-      }
+  connection.query(`SELECT ParamValue FROM ParamValue WHERE AnswValue = ?`, [value], function (
+    err,
+    result
+  ) {
+    if (err) {
+      throw new Error(err);
+    }
 
-      console.log(`success saved! ${param} - ${value}`);
+    console.log(result);
 
+    if (result.length) {
+      const {ParamValue} = result[0];
+      console.log(ParamValue);
+
+      connection.query(
+        `INSERT INTO Answ (Parameter, Value) VALUES (?,?)`,
+        [param, ParamValue],
+        function (err, question) {
+          if (err) {
+            throw new Error(err);
+          }
+
+          console.log(`success saved! ${ParamValue} - ${value}`);
+
+          getOrderNextQuestion(ParamValue, value);
+        }
+      );
+    } else if (value !== `help`) {
+      connection.query(
+        `INSERT INTO Answ (Parameter, Value) VALUES (?,?)`,
+        [param, value],
+        function (err) {
+          if (err) {
+            throw new Error(err);
+          }
+
+          console.log(`success saved! ${param} - ${value}`);
+
+          getOrderNextQuestion(param, value);
+        }
+      );
+    } else {
       getOrderNextQuestion(param, value);
-    });
-    return;
-  }
+    }
+  });
+}
 
-  getOrderNextQuestion(param, value);
+function createAnswerTable(id) {
+  connection.query(
+    `CREATE TABLE 'Answ_${id}' (
+      'ID' int(100) NOT NULL,
+      'Parameter' varchar(100) NOT NULL,
+      'Value' varchar(100) DEFAULT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;`
+  );
+
+  return `Answ_${id}`;
 }
 
 bot.onText(/\/start/, (msg) => {
@@ -137,7 +225,22 @@ bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id, `Здравствуйте, ${msg.from.first_name}!`);
   ID_CHAT = msg.chat.id;
 
+  CURRENT_ANSW_TABLE = createAnswerTable(msg.chat.id);
+
   getQuestion(START_ORDER, ID_CHAT);
+});
+
+bot.onText(/\/items/, (msg) => {
+  connection.query(`SELECT * FROM Items`, function (err, tvs) {
+    if (err) {
+      throw new Error(err);
+    }
+
+    bot.sendMessage(
+      msg.chat.id,
+      tvs.length ? JSON.stringify(tvs, null, 2) : `Телевизоры отсутсвуют в БД :( `
+    );
+  });
 });
 
 bot.on('callback_query', (query) => {

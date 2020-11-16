@@ -4,8 +4,7 @@
   "description": "telegram bot for selection TV",
   "main": "index.js",
   "scripts": {
-    "start": "nodemon index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "nodemon src/index.js"
   },
   "author": "",
   "license": "ISC",

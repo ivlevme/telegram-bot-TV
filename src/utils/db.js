@@ -1,27 +1,28 @@
 const connection = require('../db');
 
-function createAnswerTable(id) {
-  const tableName = `Answ_${id}`;
-  try {
-    connection.query(`CHECK TABLE ${tableName}`, function (err, result) {
-      console.log(result);
-      if (result[0].Msg_text === 'OK') {
-        connection.query(`DELETE FROM ${tableName}`);
-        console.log(`DELETE TABLE!!!`);
-        return;
+function clearTable(conn, tableName, id) {
+  const newName = `${tableName}_${id}`;
+  return conn
+    .query(`CHECK TABLE ${newName}`)
+    .then(([status]) => {
+      console.log(`CHECK STATUS:`, status);
+      if (status[0].Msg_text === 'OK') {
+        if (tableName === `Answ`) {
+          conn.query(`DELETE FROM ${newName}`);
+        } else {
+          conn.query(`DELETE FROM ${newName}`)
+        }
+      } else {
+        conn.query(`CREATE TABLE std_1313.${newName} AS SELECT * FROM ${tableName}`);
       }
-      connection.query(
-        `CREATE TABLE std_1313.${tableName} (ID INT NOT NULL AUTO_INCREMENT , Parameter VARCHAR(100) NOT NULL , Value VARCHAR(100) NOT NULL , PRIMARY KEY (ID)) ENGINE = InnoDB;
-          `
-      );
-      console.log(`CREATE TABLEE!!`);
-    });
-  } catch (error) {
-    console.log(error);
-    connection.query(`DELETE FROM ${tableName}`);
-  }
-
-  return tableName;
+    })
+    .then(() => {
+      conn.query(`INSERT INTO ${newName} SELECT * FROM ${tableName}`);
+    })
+    .then(() => {
+      console.log(`SUCCESS ${newName} TABLE`);
+    })
+    .catch((err) => console.log(`ERR ANW: ${err}`));
 }
 
-module.exports = createAnswerTable;
+module.exports = {clearTable};

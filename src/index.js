@@ -1,81 +1,73 @@
-const bot = require('./initBot');
-const connection = require('./db');
+const worker = require('worker_threads');
+const mysql = require('mysql2/promise');
+const fs = require('fs');
 
-const createAnswerTable = require('./utils/db');
+const bot = require('./initBot');
+const config = require('./db');
+const {sqlCreatQwestTable, sqlCreateAnswTable} = require('./utils/const');
+
+const {clearTable} = require('./utils/db');
 
 let START_ORDER = 1;
 let HELP_WORD = 'help';
-let ANSW_TABLE = '';
 
 const OrderState = {};
+
+let connection = null;
 
 function getOrderNextQuestion(param, value, id) {
   console.log('order - ', param, value);
 
-  connection.query(
-    `SELECT NextQuest FROM QuestRules WHERE IF_Par = ? AND IF_Value = ?`,
-    [param, value],
-    function (err, questionOrder) {
-      if (err) {
-        throw new Error(err);
-      }
-
+  connection
+    .query(`SELECT NextQuest FROM QuestRules WHERE IF_Par = ? AND IF_Value = ?`, [param, value])
+    .then(([questionOrder]) => {
       console.log('Next question - ', questionOrder);
       if (questionOrder.length !== 0) {
         const {NextQuest} = questionOrder[0];
-        OrderState[ANSW_TABLE] = NextQuest;
+        OrderState[id] = NextQuest;
 
         getQuestion(NextQuest, id);
         return;
       }
 
-      OrderState[ANSW_TABLE]++;
-      getQuestion(OrderState[ANSW_TABLE], id);
-    }
-  );
+      OrderState[id]++;
+      getQuestion(OrderState[id], id);
+    });
 }
 
 function getQuestion(order, msgId) {
-  connection.query(`SELECT * FROM Quest WHERE OrderQwest = '?'`, [order], function (err, question) {
-    if (err) {
-      throw new Error(err);
-    }
+  connection
+    .query(`SELECT * FROM Quest_${msgId} WHERE OrderQwest = '?'`, [order])
+    .then(([question]) => {
+      console.log(question);
+      if (question.length) {
+        const [name, keyboard] = generateInterfaceForQuestion(question[0]);
 
-    if (question.length) {
-      const [name, keyboard] = generateInterfaceForQuestion(question[0]);
+        console.log(name);
+        console.log(keyboard);
 
-      console.log(name);
-      console.log(keyboard);
+        bot.sendMessage(msgId, name, keyboard);
+        return;
+      }
 
-      bot.sendMessage(msgId, name, keyboard);
-      return;
-    }
-
-    bot.sendMessage(msgId, 'Отлично, мы закончили! Сейчас появится результат, ожидайте :)');
-    sendSelectedItem(msgId);
-  });
+      bot.sendMessage(msgId, 'Отлично, мы закончили! Сейчас появится результат, ожидайте :)');
+      sendSelectedItem(msgId);
+    });
 }
 
 function sendSelectedItem(id) {
-  connection.query(`SELECT * FROM ${ANSW_TABLE}`, function (err, data) {
-    if (err) {
-      throw new Error(err);
-    }
-
-    console.log(data);
-
+  connection.query(`SELECT * FROM Answ_${id}`).then(([data]) => {
     const term = data.map((param) => `${param.Parameter}='${param.Value}'`).join(' AND ');
     console.log(term);
 
-    connection.query(`SELECT * FROM Items WHERE ${term}`, function (err, data) {
-      if (err) {
-        throw new Error(err);
+    connection.query(`SELECT * FROM Items WHERE ${term}`).then(([data]) => {
+      if (data.length) {
+        bot.sendMessage(id, JSON.stringify(data, null, 2));
+        bot.sendPhoto(id, fs.readFileSync(__dirname + '/tv.png'));
+        return;
       }
 
-      const result = data.length
-        ? JSON.stringify(data, null, 2)
-        : `По вашем параметрам нет подходящих телевизоров. Попробуйте ещё раз командой /start`;
-      bot.sendMessage(id, result);
+      bot.sendMessage(id, `По вашем параметрам нет подходящих телевизоров. Попробуйте ещё раз командой /start`);
     });
   });
 }
@@ -143,6 +135,7 @@ function generateInterfaceForQuestion(question) {
     {
       reply_markup: {
         inline_keyboard: [answers],
+        one_time_keyboard: true,
       },
     },
   ];
@@ -158,71 +151,92 @@ function saveCulcParametr(param, result, id) {
 }
 
 function insertParam(param, value, id) {
-  connection.query(
-    `INSERT INTO ${ANSW_TABLE} (Parameter, Value) VALUES (?,?)`,
-    [param, value],
-    function (err) {
-      if (err) {
-        throw new Error(err);
-      }
-
-      console.log(`success saved! ${param} - ${value}`);
-
-      getOrderNextQuestion(param, value, id);
-    }
-  );
+  Promise.all([
+    connection.query(`INSERT INTO Answ_${id} (Parameter, Value) VALUES (?,?)`, [param, value]),
+    connection.query(`UPDATE Quest_${id} SET Asked = ? WHERE OrderQwest = ${OrderState[id]}`, [1]),
+  ]).then(() => {
+    console.log(`success saved! ${param} - ${value}`);
+    getOrderNextQuestion(param, value, id);
+  });
 }
 
 function saveAnswer(value, param, id) {
   console.log(`param: `, param);
   console.log(`save: `, value);
 
-  connection.query(`SELECT ParamValue FROM ParamValue WHERE AnswValue = ?`, [value], function (
-    err,
-    result
-  ) {
-    if (err) {
-      throw new Error(err);
-    }
+  connection
+    .query(`SELECT ParamValue FROM ParamValue WHERE AnswValue = ?`, [value])
+    .then(([result]) => {
+      console.log(result);
+      console.log(`RESULT`);
 
-    console.log(result);
-    console.log(`RESULT`);
-
-    if (result.length) {
-      saveCulcParametr(param, result, id);
-    } else if (value !== HELP_WORD) {
-      insertParam(param, value, id);
-    } else {
-      getOrderNextQuestion(param, value, id);
-    }
-  });
+      if (result.length) {
+        saveCulcParametr(param, result, id);
+      } else if (value !== HELP_WORD) {
+        insertParam(param, value, id);
+      } else {
+        getOrderNextQuestion(param, value, id);
+      }
+    });
 }
 
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id, `Здравствуйте, ${msg.from.first_name}!`);
-  console.log(msg.chat.id);
 
-  ANSW_TABLE = createAnswerTable(msg.chat.id);
-  OrderState[ANSW_TABLE] = START_ORDER;
+  OrderState[msg.chat.id] = START_ORDER;
 
-  getQuestion(OrderState[ANSW_TABLE], msg.chat.id);
+  mysql
+    .createConnection(config)
+    .then((conn) => {
+      connection = conn;
+
+      console.log(`SUCCESS CONNETED TO DATABASE`);
+      bot.sendMessage(msg.chat.id, `Соединение с БД успешно установлено!`);
+
+      Promise.all([clearTable(conn, `Answ`, msg.chat.id), clearTable(conn, `Quest`, msg.chat.id)])
+        .then(() => {
+          console.log(`SUCCESS CREATE ANSW AND COPY QUEST TABLES`);
+
+          console.log(' get QWEST ', OrderState[msg.chat.id]);
+          getQuestion(OrderState[msg.chat.id], msg.chat.id);
+        })
+        .catch((err) => {
+          console.error(`ERROR: `, err);
+          bot.sendMessage(msg.chat.id, `Не удалось сессию. Попруйте ещё раз /start`);
+        });
+    })
+    .catch((err) => {
+      console.error(`ERROR: ${err}`);
+      bot.sendMessage(msg.chat.id, `Не удалось подключиться к БД. Попробуйте ещё раз /start`);
+    });
 });
 
 bot.onText(/\/items/, (msg) => {
-  connection.query(`SELECT * FROM Items`, function (err, tvs) {
-    if (err) {
+  mysql
+    .createConnection(config)
+    .then((conn) => {
+    conn
+    .query(`SELECT * FROM Items`)
+    .then(([tvs]) => {
+      bot.sendMessage(
+        msg.chat.id,
+        tvs.length ? JSON.stringify(tvs.slice(0, 15), null, 2) : `Телевизоры отсутсвуют в БД :( `
+      );
+    })
+    .catch((err) => {
+      bot.sendMessage(msg.chat.id, 'Извините, БД не работает :(');
       throw new Error(err);
-    }
-
-    bot.sendMessage(
-      msg.chat.id,
-      tvs.length ? JSON.stringify(tvs.slice(0, 15), null, 2) : `Телевизоры отсутсвуют в БД :( `
-    );
+    });
   });
 });
 
 bot.on('callback_query', (query) => {
   const [value, param] = query.data.split(',');
+
+  bot.deleteMessage(query.message.chat.id, query.message.message_id)
+  bot.sendMessage(query.message.chat.id, `${query.message.text}: ${value}`, {
+    disable_notification: true
+  })
 
   bot.answerCallbackQuery(query.id, `Принято ${value}`);
   saveAnswer(value, param, query.message.chat.id);

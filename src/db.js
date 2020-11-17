@@ -1,21 +1,13 @@
-const mysql = require('mysql2');
+const bluebird = require('bluebird');
 
-
-const connection = mysql.createConnection({
+const config = {
   host: 'std-mysql',
   port: '3306',
   user: 'std_1313',
   database: 'std_1313',
   password: 'drewIvlev',
-});
-
-connection.connect(function (err) {
-  if (err) {
-    return console.error('Ошибка: ' + err.message);
-  } else {
-    console.log('Подключение к серверу MySQL успешно установлено');
-  }
-});
+  Promise: bluebird,
+}
 
 
-module.exports = connection;
+module.exports = config;

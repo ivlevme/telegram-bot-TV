@@ -5,71 +5,122 @@ const fs = require('fs');
 const bot = require('./initBot');
 const config = require('./db');
 const {sqlCreatQwestTable, sqlCreateAnswTable} = require('./utils/const');
-
 const {clearTable} = require('./utils/db');
 
+const LogicalOperation = ['', `AND`, `OR`, `NOT`];
 let START_ORDER = 1;
-let HELP_WORD = 'help';
-
-const OrderState = {};
 
 let connection = null;
+const OrderState = {};
 
-function getOrderNextQuestion(param, value, id) {
+async function isParamDefine(param, id) {
+  console.log(`PAram - `, param);
+  const [result] = await connection.query(`SELECT * FROM Answ_${id} WHERE Parameter = ?`, [param]);
+  console.log(`isPARAM DEFINE RESULT ---`, result);
+  if (result.length) {
+    return true;
+  }
+  return false;
+}
+
+async function defineValueParam(param, id) {
+  const [result] = await connection.query(`SELECT Value FROM Answ_${id} WHERE Parameter = ?`, [
+    param,
+  ]);
+  console.log(`isPARAM DEFINE RESULT ---`, result);
+  if (result.length) {
+    return result[0].Value;
+  }
+  return '';
+}
+
+async function getOrderNextQuestion(param, value, id) {
   console.log('order - ', param, value);
+  checkComplexRules(param, value, id);
 
-  connection
-    .query(`SELECT NextQuest FROM QuestRules WHERE IF_Par = ? AND IF_Value = ?`, [param, value])
-    .then(([questionOrder]) => {
-      console.log('Next question - ', questionOrder);
-      if (questionOrder.length !== 0) {
-        const {NextQuest} = questionOrder[0];
-        OrderState[id] = NextQuest;
+  const [
+    questionOrder,
+  ] = await connection.query(`SELECT NextQuest FROM QuestRules WHERE IF_Par = ? AND IF_Value = ?`, [
+    param,
+    value,
+  ]);
 
-        getQuestion(NextQuest, id);
-        return;
-      }
+  console.log('Next question - ', questionOrder);
+  if (questionOrder.length) {
+    const {NextQuest} = questionOrder[0];
+    OrderState[id] = NextQuest;
 
-      OrderState[id]++;
-      getQuestion(OrderState[id], id);
-    });
+    getQuestion(NextQuest, id);
+    return;
+  }
+
+  OrderState[id]++;
+  getQuestion(OrderState[id], id);
 }
 
-function getQuestion(order, msgId) {
-  connection
-    .query(`SELECT * FROM Quest_${msgId} WHERE OrderQwest = '?'`, [order])
-    .then(([question]) => {
-      console.log(question);
-      if (question.length) {
-        const [name, keyboard] = generateInterfaceForQuestion(question[0]);
+async function getQuestion(order, msgId) {
+  const [question] = await connection.query(`SELECT * FROM Quest_${msgId} WHERE OrderQwest = '?'`, [
+    order,
+  ]);
 
-        console.log(name);
-        console.log(keyboard);
+  console.log(`Current Question`, question);
+  if (question.length) {
+    const isParam = await isParamDefine(question[0].Parameter, msgId);
 
-        bot.sendMessage(msgId, name, keyboard);
-        return;
-      }
+    console.log(`Isn't PARAM DEFINE: -- `, isParam);
+    if (!isParam) {
+      const [name, keyboard] = generateInterfaceForQuestion(question[0]);
 
-      bot.sendMessage(msgId, 'Отлично, мы закончили! Сейчас появится результат, ожидайте :)');
-      sendSelectedItem(msgId);
-    });
+      console.log(name);
+      console.log(keyboard);
+
+      bot.sendMessage(msgId, name, keyboard);
+    } else {
+      console.log(`Определен ПВОТ ОН - `, question[0].Parameter);
+      const valueParam = await defineValueParam(question[0].Parameter, msgId);
+      console.log(`Определен Значение - `, valueParam);
+      getOrderNextQuestion(question[0].Parameter, valueParam, msgId);
+    }
+    return;
+  }
+
+  bot.sendMessage(msgId, 'Отлично, мы закончили! Сейчас появится результат, ожидайте :)');
+  sendSelectedItem(msgId);
 }
 
-function sendSelectedItem(id) {
-  connection.query(`SELECT * FROM Answ_${id}`).then(([data]) => {
-    const term = data.map((param) => `${param.Parameter}='${param.Value}'`).join(' AND ');
-    console.log(term);
+async function sendSelectedItem(id) {
+  const [data] = await connection.query(`SELECT * FROM Answ_${id}`);
 
-    connection.query(`SELECT * FROM Items WHERE ${term}`).then(([data]) => {
-      if (data.length) {
-        bot.sendMessage(id, JSON.stringify(data, null, 2));
-        bot.sendPhoto(id, fs.readFileSync(__dirname + '/tv.png'));
-        return;
-      }
+  const term = data.map((param) => `${param.Parameter}='${param.Value}'`).join(' AND ');
+  console.log(term);
 
-      bot.sendMessage(id, `По вашем параметрам нет подходящих телевизоров. Попробуйте ещё раз командой /start`);
-    });
-  });
+  const [suitableItem] = await connection.query(`SELECT * FROM Items WHERE ${term}`);
+
+  if (suitableItem.length) {
+    const result = suitableItem[0];
+    console.log(result);
+    const userResult = `
+      Вам подходит следующая модель:
+      • Производитель - ${result.Manufacturer}
+      • Диагональ экрана - ${result.Diagonal}"
+      • Разрешение экрана - ${result.Resolution}
+      • Год производства - ${result.DevelopYear}
+      • Частота обновления экрана - ${result.Frequency} Гц
+      • Тип матрицы - ${result.Illumination}
+      • Поддержка смартТВ - ${result.Smarttv}
+      • Поддержка блютуз - ${result.Bluetooth}
+      • Поддержка интернета - ${result.Network}
+      • Поддержка HDR - ${result.Hdr}
+      `;
+    bot.sendMessage(id, userResult);
+    bot.sendPhoto(id, fs.readFileSync(__dirname + '/tv.png'));
+    return;
+  }
+
+  bot.sendMessage(
+    id,
+    `По вашем параметрам нет подходящих телевизоров. Попробуйте ещё раз командой /start`
+  );
 }
 
 function getAnswerOptions(question) {
@@ -93,15 +144,14 @@ function getAnswerOptions(question) {
 
 function getWrittenAnswer(question) {
   bot.on('message', (msg) => {
-    console.log(`MSG!!!!`, msg.chat.id);
     switch (question.Parameter) {
       case 'diagonal':
-        if (msg.text >= 22 && msg.text <= 75) {
+        if (msg.text == 22 || msg.text == 55 || msg.text == 65) {
           console.log(`SAVE ANSW`);
           saveAnswer(msg.text, question.Parameter, msg.chat.id);
           bot.off('message');
         } else {
-          bot.sendMessage(msg.chat.id, 'Ваш ответ некорректен, введите данные в диапазоне 22-75');
+          bot.sendMessage(msg.chat.id, 'Ваш ответ некорректен, введите данные: 22, 55 или 65');
         }
         break;
 
@@ -143,41 +193,75 @@ function generateInterfaceForQuestion(question) {
   return inlineKeyboard;
 }
 
-function saveCulcParametr(param, result, id) {
-  const {ParamValue} = result[0];
-  console.log(ParamValue);
-
-  insertParam(param, ParamValue, id);
-}
-
-function insertParam(param, value, id) {
-  Promise.all([
+async function insertParam(param, value, id) {
+  await Promise.all([
     connection.query(`INSERT INTO Answ_${id} (Parameter, Value) VALUES (?,?)`, [param, value]),
     connection.query(`UPDATE Quest_${id} SET Asked = ? WHERE OrderQwest = ${OrderState[id]}`, [1]),
-  ]).then(() => {
-    console.log(`success saved! ${param} - ${value}`);
-    getOrderNextQuestion(param, value, id);
-  });
+  ]);
+
+  console.log(`success saved! ${param} - ${value}`);
+  getOrderNextQuestion(param, value, id);
 }
 
-function saveAnswer(value, param, id) {
+async function checkComplexRules(param, value, id) {
+  console.log(`LOG LOGICAL`, LogicalOperation[1]);
+  const [allUserAnswers] = await connection.query(`SELECT * FROM Answ_${id}`);
+  console.log(`ALL ANSWERS USER`, allUserAnswers);
+  if (allUserAnswers.length) {
+    // Перебор по ответам для поиска правила
+    //FIXME: Переписать -> брать правило, идти в ответы и сравнивать значение параметра с ответом и с правилом.
+    allUserAnswers.forEach(async (answer) => {
+      console.log(
+        `COMPARE: if1=${param}; val1=${value} if2=${answer.Parameter} val2=${answer.Value}`
+      );
+      const [
+        complexRules,
+      ] = await connection.query(
+        `SELECT Then_Atr, Then_Value FROM RulesComplex WHERE IF1_Atr = ? AND IF1_Value = ? ${LogicalOperation[1]} IF2_Atr = ? AND IF2_Value = ?`,
+        [param, value, answer.Parameter, answer.Value]
+      );
+
+      console.log(`complexRules COMPARE: `, complexRules);
+      console.log(`complexRules `, complexRules);
+      if (complexRules.length) {
+        complexRules.forEach(async (rule) => {
+          console.log(`COMPLEX RULE: `, rule);
+          const {Then_Atr, Then_Value} = rule;
+          await connection.query(`INSERT INTO Answ_${id} (Parameter, Value) VALUES (?,?)`, [
+            Then_Atr,
+            Then_Value,
+          ]);
+        });
+      }
+    });
+  }
+}
+
+async function saveAnswer(value, param, id) {
   console.log(`param: `, param);
   console.log(`save: `, value);
 
-  connection
-    .query(`SELECT ParamValue FROM ParamValue WHERE AnswValue = ?`, [value])
-    .then(([result]) => {
-      console.log(result);
-      console.log(`RESULT`);
-
-      if (result.length) {
-        saveCulcParametr(param, result, id);
-      } else if (value !== HELP_WORD) {
-        insertParam(param, value, id);
-      } else {
-        getOrderNextQuestion(param, value, id);
-      }
-    });
+  const [
+    result,
+  ] = await connection.query(
+    `SELECT Then_Atr, Then_Value FROM RulesSimple WHERE 	IF_Atr = ? AND IF_Value = ?`,
+    [param, value]
+  );
+  console.log(`RESULT: `, result);
+  if (result.length) {
+    const {Then_Atr: atr, Then_Value: atrValue} = result[0];
+    console.log(`atr - `, atr);
+    console.log(`atrValue - `, atrValue);
+    console.log(`save asnw funct`);
+    console.log(typeof atr);
+    if (atr !== null && atrValue !== null) {
+      insertParam(atr, atrValue, id);
+    } else {
+      getOrderNextQuestion(param, value, id);
+    }
+    return;
+  }
+  insertParam(param, value, id);
 }
 
 bot.onText(/\/start/, (msg) => {
@@ -212,31 +296,29 @@ bot.onText(/\/start/, (msg) => {
 });
 
 bot.onText(/\/items/, (msg) => {
-  mysql
-    .createConnection(config)
-    .then((conn) => {
+  mysql.createConnection(config).then((conn) => {
     conn
-    .query(`SELECT * FROM Items`)
-    .then(([tvs]) => {
-      bot.sendMessage(
-        msg.chat.id,
-        tvs.length ? JSON.stringify(tvs.slice(0, 15), null, 2) : `Телевизоры отсутсвуют в БД :( `
-      );
-    })
-    .catch((err) => {
-      bot.sendMessage(msg.chat.id, 'Извините, БД не работает :(');
-      throw new Error(err);
-    });
+      .query(`SELECT * FROM Items`)
+      .then(([tvs]) => {
+        bot.sendMessage(
+          msg.chat.id,
+          tvs.length ? JSON.stringify(tvs.slice(0, 10), null, 2) : `Телевизоры отсутсвуют в БД :( `
+        );
+      })
+      .catch((err) => {
+        bot.sendMessage(msg.chat.id, 'Извините, БД не работает :(');
+        throw new Error(err);
+      });
   });
 });
 
 bot.on('callback_query', (query) => {
   const [value, param] = query.data.split(',');
 
-  bot.deleteMessage(query.message.chat.id, query.message.message_id)
+  bot.deleteMessage(query.message.chat.id, query.message.message_id);
   bot.sendMessage(query.message.chat.id, `${query.message.text}: ${value}`, {
-    disable_notification: true
-  })
+    disable_notification: true,
+  });
 
   bot.answerCallbackQuery(query.id, `Принято ${value}`);
   saveAnswer(value, param, query.message.chat.id);

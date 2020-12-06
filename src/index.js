@@ -5,7 +5,7 @@ const fs = require('fs');
 const bot = require('./initBot');
 const config = require('./db');
 const {sqlCreatQwestTable, sqlCreateAnswTable} = require('./utils/const');
-const {clearTable} = require('./utils/db');
+const {clearTable, clearUsedComplexRules} = require('./utils/db');
 
 const LogicalOperation = ['', `AND`, `OR`, `NOT`];
 let START_ORDER = 1;
@@ -203,35 +203,33 @@ async function insertParam(param, value, id) {
   getOrderNextQuestion(param, value, id);
 }
 
-async function checkComplexRules(param, value, id) {
-  console.log(`LOG LOGICAL`, LogicalOperation[1]);
-  const [allUserAnswers] = await connection.query(`SELECT * FROM Answ_${id}`);
-  console.log(`ALL ANSWERS USER`, allUserAnswers);
-  if (allUserAnswers.length) {
-    // Перебор по ответам для поиска правила
-    //FIXME: Переписать -> брать правило, идти в ответы и сравнивать значение параметра с ответом и с правилом.
-    allUserAnswers.forEach(async (answer) => {
-      console.log(
-        `COMPARE: if1=${param}; val1=${value} if2=${answer.Parameter} val2=${answer.Value}`
-      );
-      const [
-        complexRules,
-      ] = await connection.query(
-        `SELECT Then_Atr, Then_Value FROM RulesComplex WHERE IF1_Atr = ? AND IF1_Value = ? ${LogicalOperation[1]} IF2_Atr = ? AND IF2_Value = ?`,
-        [param, value, answer.Parameter, answer.Value]
-      );
+function compareAtrValue(answers, atr, value) {
+  for (const answer of answers) {
+    if (answer.Parameter == atr) {
+      if (answer.Value == value) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
-      console.log(`complexRules COMPARE: `, complexRules);
-      console.log(`complexRules `, complexRules);
-      if (complexRules.length) {
-        complexRules.forEach(async (rule) => {
-          console.log(`COMPLEX RULE: `, rule);
-          const {Then_Atr, Then_Value} = rule;
-          await connection.query(`INSERT INTO Answ_${id} (Parameter, Value) VALUES (?,?)`, [
-            Then_Atr,
-            Then_Value,
-          ]);
-        });
+async function checkComplexRules(param, value, id) {
+  const [allUserAnswers] = await connection.query(`SELECT * FROM Answ_${id}`);
+  const [allComplexRules] = await connection.query(`SELECT * FROM RulesComplex_${id} WHERE Used = 0`);
+
+  if (allUserAnswers.length) {
+    allComplexRules.forEach(async (rule) => {
+      if (
+        compareAtrValue(allUserAnswers, rule.IF1_Atr, rule.IF1_Value) &&
+        compareAtrValue(allUserAnswers, rule.IF2_Atr, rule.IF2_Value)
+      ) {
+        console.log(`RULE WAS FOUND SUCCESS!`, rule);
+        await connection.query(`INSERT INTO Answ_${id} (Parameter, Value) VALUES (?,?)`, [
+          rule.Then_Atr,
+          rule.Then_Value,
+        ]);
+        await connection.query(`UPDATE RulesComplex_${id} SET Used = 1 WHERE ID = ?`, [rule.ID]);
       }
     });
   }
@@ -277,7 +275,11 @@ bot.onText(/\/start/, (msg) => {
       console.log(`SUCCESS CONNETED TO DATABASE`);
       bot.sendMessage(msg.chat.id, `Соединение с БД успешно установлено!`);
 
-      Promise.all([clearTable(conn, `Answ`, msg.chat.id), clearTable(conn, `Quest`, msg.chat.id)])
+      Promise.all([
+        clearTable(conn, `Answ`, msg.chat.id),
+        clearTable(conn, `Quest`, msg.chat.id),
+        clearTable(conn, `RulesComplex`, msg.chat.id),
+      ])
         .then(() => {
           console.log(`SUCCESS CREATE ANSW AND COPY QUEST TABLES`);
 

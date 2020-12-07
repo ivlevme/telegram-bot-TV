@@ -4,10 +4,13 @@ const fs = require('fs');
 
 const bot = require('./initBot');
 const config = require('./db');
-const {sqlCreatQwestTable, sqlCreateAnswTable} = require('./utils/const');
-const {clearTable, clearUsedComplexRules} = require('./utils/db');
+const {clearTable} = require('./utils/db');
 
-const LogicalOperation = ['', `AND`, `OR`, `NOT`];
+const LogicalOperation = {
+  AND: 1,
+  OR: 2,
+  NOT: 3,
+};
 let START_ORDER = 1;
 
 let connection = null;
@@ -27,7 +30,6 @@ async function defineValueParam(param, id) {
   const [result] = await connection.query(`SELECT Value FROM Answ_${id} WHERE Parameter = ?`, [
     param,
   ]);
-  console.log(`isPARAM DEFINE RESULT ---`, result);
   if (result.length) {
     return result[0].Value;
   }
@@ -214,15 +216,38 @@ function compareAtrValue(answers, atr, value) {
   return false;
 }
 
+//TODO:
+//Генерация и проверка условия, затем возврат
+function checkCondition(result1, result2, operator) {
+  switch (operator) {
+    case LogicalOperation.AND:
+      return result1 && result2;
+
+    case LogicalOperation.OR:
+      return result1 || result2;
+
+    case LogicalOperation.NOT:
+      return result1 && !result2;
+
+    default:
+      return false;
+  }
+}
+
 async function checkComplexRules(param, value, id) {
   const [allUserAnswers] = await connection.query(`SELECT * FROM Answ_${id}`);
-  const [allComplexRules] = await connection.query(`SELECT * FROM RulesComplex_${id} WHERE Used = 0`);
+  const [allComplexRules] = await connection.query(
+    `SELECT * FROM RulesComplex_${id} WHERE Used = 0`
+  );
 
   if (allUserAnswers.length) {
     allComplexRules.forEach(async (rule) => {
       if (
-        compareAtrValue(allUserAnswers, rule.IF1_Atr, rule.IF1_Value) &&
-        compareAtrValue(allUserAnswers, rule.IF2_Atr, rule.IF2_Value)
+        checkCondition(
+          compareAtrValue(allUserAnswers, rule.IF1_Atr, rule.IF1_Value),
+          compareAtrValue(allUserAnswers, rule.IF2_Atr, rule.IF2_Value),
+          rule.Operation
+        )
       ) {
         console.log(`RULE WAS FOUND SUCCESS!`, rule);
         await connection.query(`INSERT INTO Answ_${id} (Parameter, Value) VALUES (?,?)`, [
@@ -262,56 +287,43 @@ async function saveAnswer(value, param, id) {
   insertParam(param, value, id);
 }
 
-bot.onText(/\/start/, (msg) => {
+bot.onText(/\/start/, async (msg) => {
   bot.sendMessage(msg.chat.id, `Здравствуйте, ${msg.from.first_name}!`);
-
   OrderState[msg.chat.id] = START_ORDER;
 
-  mysql
-    .createConnection(config)
-    .then((conn) => {
-      connection = conn;
+  try {
+    connection = await mysql.createConnection(config);
 
-      console.log(`SUCCESS CONNETED TO DATABASE`);
-      bot.sendMessage(msg.chat.id, `Соединение с БД успешно установлено!`);
+    console.log(`SUCCESS CONNETED TO DATABASE`);
+    bot.sendMessage(msg.chat.id, `Соединение с БД успешно установлено!`);
 
-      Promise.all([
-        clearTable(conn, `Answ`, msg.chat.id),
-        clearTable(conn, `Quest`, msg.chat.id),
-        clearTable(conn, `RulesComplex`, msg.chat.id),
-      ])
-        .then(() => {
-          console.log(`SUCCESS CREATE ANSW AND COPY QUEST TABLES`);
+    await clearTable(connection, `Answ`, msg.chat.id);
+    await clearTable(connection, `Quest`, msg.chat.id);
+    await clearTable(connection, `RulesComplex`, msg.chat.id);
 
-          console.log(' get QWEST ', OrderState[msg.chat.id]);
-          getQuestion(OrderState[msg.chat.id], msg.chat.id);
-        })
-        .catch((err) => {
-          console.error(`ERROR: `, err);
-          bot.sendMessage(msg.chat.id, `Не удалось сессию. Попруйте ещё раз /start`);
-        });
-    })
-    .catch((err) => {
-      console.error(`ERROR: ${err}`);
-      bot.sendMessage(msg.chat.id, `Не удалось подключиться к БД. Попробуйте ещё раз /start`);
-    });
+    console.log(`SUCCESS CREATE ANSW AND COPY QUEST TABLES`);
+
+    console.log(' get QWEST ', OrderState[msg.chat.id]);
+    getQuestion(OrderState[msg.chat.id], msg.chat.id);
+  } catch (err) {
+    console.error(`ERROR: ${err}`);
+    bot.sendMessage(msg.chat.id, `Не удалось подключиться к БД. Попробуйте ещё раз /start`);
+  }
 });
 
-bot.onText(/\/items/, (msg) => {
-  mysql.createConnection(config).then((conn) => {
-    conn
-      .query(`SELECT * FROM Items`)
-      .then(([tvs]) => {
-        bot.sendMessage(
-          msg.chat.id,
-          tvs.length ? JSON.stringify(tvs.slice(0, 10), null, 2) : `Телевизоры отсутсвуют в БД :( `
-        );
-      })
-      .catch((err) => {
-        bot.sendMessage(msg.chat.id, 'Извините, БД не работает :(');
-        throw new Error(err);
-      });
-  });
+bot.onText(/\/items/, async (msg) => {
+  try {
+    connection = await mysql.createConnection(config);
+    const [tvs] = await connection.query(`SELECT * FROM Items`);
+
+    bot.sendMessage(
+      msg.chat.id,
+      tvs.length ? JSON.stringify(tvs.slice(0, 10), null, 2) : `Телевизоры отсутсвуют в БД :( `
+    );
+  } catch (err) {
+    bot.sendMessage(msg.chat.id, 'Извините, БД не работает :(');
+    throw new Error(err);
+  }
 });
 
 bot.on('callback_query', (query) => {
